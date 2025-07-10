@@ -1,24 +1,32 @@
+let asphaltTexture, trackGraphic;
 let cars = [];
 let isPaused = false;
 let laneSlider, carSlider, speedSlider;
 let pauseBtn, resetBtn;
 
-// track geometry
 const TRACK_WIDTH_PCT = 0.7;
 const TRACK_HEIGHT_PCT = 0.5;
 const LANE_SPACING = 30;
 
-// behavior parameters
-const SAFE_ANGLE = 0.4; // radians: if gap < this, slow down
-const SLOWDOWN_FACT = 0.3; // slow to 30% of baseSpeed when stuck
-const LANE_CHANGE_COOLDOWN = 2; // seconds
+// behavior constants
+const SAFE_ANGLE = 0.4; // radians: if gap < SAFE_ANGLE, slow
+const SLOWDOWN_FACT = 0.3; // slow to 30% of baseSpeed
+const LANE_CHANGE_COOLDOWN = 2; // seconds between allowed changes
+const MIN_GAP = 0.2; // radians: hard minimum gap to prevent overlap
+
+function preload() {
+  asphaltTexture = loadImage("assets/asphalt.png");
+}
 
 function setup() {
+  setAttributes("antialias", true);
   createCanvas(windowWidth, windowHeight);
   colorMode(HSL, 360, 100, 100);
   textFont("Arial");
 
-  // UI
+  buildTrackGraphic();
+
+  // UI panel
   const ctrl = createDiv().id("controls");
   createP("Lanes").parent(ctrl);
   laneSlider = createSlider(1, 5, 3, 1).parent(ctrl);
@@ -33,6 +41,7 @@ function setup() {
       isPaused = !isPaused;
       pauseBtn.html(isPaused ? "Resume" : "Pause");
     });
+
   resetBtn = createButton("Reset").parent(ctrl).mousePressed(initCars);
 
   initCars();
@@ -40,46 +49,60 @@ function setup() {
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+  buildTrackGraphic();
+}
+
+// tile the asphalt into an offscreen buffer
+function buildTrackGraphic() {
+  trackGraphic = createGraphics(width, height);
+  trackGraphic.noSmooth();
+  for (let x = 0; x < width; x += asphaltTexture.width) {
+    for (let y = 0; y < height; y += asphaltTexture.height) {
+      trackGraphic.image(asphaltTexture, x, y);
+    }
+  }
 }
 
 function initCars() {
   cars = [];
-  const lanes = laneSlider.value();
-  const count = carSlider.value();
+  let lanes = laneSlider.value();
+  let count = carSlider.value();
+  // compute initial lateral offsets
+  let halfW = (lanes * LANE_SPACING) / 2;
   for (let i = 0; i < count; i++) {
-    cars.push(
-      new Car(
-        random(TWO_PI), // start angle
-        random(0.5, 1.0), // baseSpeed (rad/sec)
-        color(random(360), 80, 60),
-        floor(random(lanes)) // lane index
-      )
+    let lane = floor(random(lanes));
+    let offset = -halfW + (lane + 0.5) * LANE_SPACING;
+    let c = new Car(
+      random(TWO_PI), // start angle
+      random(0.5, 1.0), // baseSpeed (rad/s)
+      color(random(360), 80, 60),
+      lane,
+      offset
     );
+    // stagger initial lane-change availability
+    c._lastLC = millis() / 1000 - random(0, LANE_CHANGE_COOLDOWN);
+    cars.push(c);
   }
 }
 
 function draw() {
   background(120, 50, 30); // grass
 
-  // track dims
+  // center & radii
   const cx = width / 2,
     cy = height / 2;
   const cRX = (width * TRACK_WIDTH_PCT) / 2;
   const cRY = (height * TRACK_HEIGHT_PCT) / 2;
   const halfW = (laneSlider.value() * LANE_SPACING) / 2;
-  const oRX = cRX + halfW,
-    oRY = cRY + halfW;
-  const iRX = max(cRX - halfW, 0),
-    iRY = max(cRY - halfW, 0);
+  const outerRX = cRX + halfW,
+    outerRY = cRY + halfW;
+  const innerRX = max(cRX - halfW, 0),
+    innerRY = max(cRY - halfW, 0);
 
-  // draw road ring
-  noStroke();
-  fill(0, 0, 20);
-  ellipse(cx, cy, oRX * 2, oRY * 2);
-  fill(120, 50, 30);
-  ellipse(cx, cy, iRX * 2, iRY * 2);
+  // draw textured road ring
+  drawTexturedRing(cx, cy, outerRX, outerRY, innerRX, innerRY);
 
-  // lane dividers
+  // dashed lane dividers
   stroke(0, 0, 100);
   strokeWeight(2);
   drawingContext.setLineDash([20, 20]);
@@ -89,72 +112,77 @@ function draw() {
   }
   drawingContext.setLineDash([]);
 
-  // boundaries
+  // solid boundaries
   stroke(0, 0, 100);
   strokeWeight(4);
   noFill();
-  ellipse(cx, cy, oRX * 2, oRY * 2);
-  ellipse(cx, cy, iRX * 2, iRY * 2);
+  ellipse(cx, cy, outerRX * 2, outerRY * 2);
+  ellipse(cx, cy, innerRX * 2, innerRY * 2);
 
-  // apply behavior & update
+  // update & draw cars
   const dt = deltaTime / 1000;
   if (!isPaused) {
-    applyTrafficRules(dt);
-    cars.forEach((c) => c.update(dt));
+    applyTrafficRules();
+    cars.forEach((c) => c.update(dt, cars));
   }
-
-  // draw cars
   cars.forEach((c) => c.show(cx, cy, cRX, cRY));
 }
 
-function applyTrafficRules(dt) {
-  const lanes = laneSlider.value();
+// clip everything except the ring, then stamp the asphalt texture
+function drawTexturedRing(cx, cy, oRX, oRY, iRX, iRY) {
+  push();
+  let ctx = drawingContext;
+  ctx.save();
+  ctx.beginPath();
+  ctx.ellipse(cx, cy, oRX, oRY, 0, 0, TWO_PI);
+  ctx.ellipse(cx, cy, iRX, iRY, 0, 0, TWO_PI, true);
+  ctx.clip("evenodd");
+  image(trackGraphic, 0, 0);
+  ctx.restore();
+  pop();
+}
 
-  // group by lane for gap detection
+// slowdown + lane-change requests
+function applyTrafficRules() {
+  let lanes = laneSlider.value();
+
   for (let lane = 0; lane < lanes; lane++) {
+    // cars in this lane sorted by angle
     let group = cars
       .filter((c) => c.lane === lane)
       .sort((a, b) => a.angle - b.angle);
-    if (group.length === 0) continue;
+    if (group.length < 2) continue;
 
     for (let i = 0; i < group.length; i++) {
       let car = group[i];
       let next = group[(i + 1) % group.length];
       let gap = (next.angle - car.angle + TWO_PI) % TWO_PI;
 
-      // determine target speed
-      let target = car.baseSpeed;
-      if (gap < SAFE_ANGLE) {
-        target = car.baseSpeed * SLOWDOWN_FACT;
-      }
-
-      // smooth speed change
+      // target speed
+      let factor = gap < SAFE_ANGLE ? SLOWDOWN_FACT : 1;
+      let target = car.baseSpeed * factor;
       car.speed += (target - car.speed) * 0.1;
 
-      // attempt lane change if stuck & off cooldown
+      // only request if enough time has passed
       if (gap < SAFE_ANGLE && car.canChangeLane()) {
-        if (tryLaneChange(car, lane, SAFE_ANGLE * 1.5)) {
-          car.markLaneChange();
-        }
+        let newLane = tryLaneChange(car, lane, SAFE_ANGLE * 1.5);
+        if (newLane !== null) car.requestLaneChange(newLane);
       }
     }
   }
 }
 
-// try to move `car` from `myLane` to an adjacent lane if safe
+// find a safe adjacent lane or return null
 function tryLaneChange(car, myLane, safeGap) {
-  const total = laneSlider.value();
+  let total = laneSlider.value();
   for (let dir of [-1, 1]) {
     let tgt = myLane + dir;
     if (tgt < 0 || tgt >= total) continue;
     let others = cars
       .filter((c) => c.lane === tgt)
       .sort((a, b) => a.angle - b.angle);
-    if (!others.length) {
-      car.lane = tgt;
-      return true;
-    }
-    // find ahead & behind in target lane
+    if (others.length === 0) return tgt;
+
     let ahead =
       others.find((o) => (o.angle - car.angle + TWO_PI) % TWO_PI > 0) ||
       others[0];
@@ -165,34 +193,67 @@ function tryLaneChange(car, myLane, safeGap) {
       others[others.length - 1];
     let da = (ahead.angle - car.angle + TWO_PI) % TWO_PI;
     let db = (car.angle - behind.angle + TWO_PI) % TWO_PI;
-    if (da > safeGap && db > safeGap) {
-      car.lane = tgt;
-      return true;
-    }
+    if (da > safeGap && db > safeGap) return tgt;
   }
-  return false;
+  return null;
 }
 
 class Car {
-  constructor(angle, baseSpeed, col, lane) {
+  constructor(angle, baseSpeed, col, lane, initialOffset) {
     this.angle = angle;
     this.baseSpeed = baseSpeed;
     this.speed = baseSpeed;
     this.col = col;
     this.lane = lane;
-    this._lastLC = -Infinity; // last lane change time (s)
+    this.targetLane = lane;
+    this.laneOffset = initialOffset;
+    this.targetOffset = initialOffset;
+    this._lastLC = 0;
   }
-  update(dt) {
-    const factor = speedSlider.value() / 10;
-    this.angle = (this.angle + this.speed * dt * factor) % TWO_PI;
+
+  // schedule a lane‐switch animation
+  requestLaneChange(newLane) {
+    this.targetLane = newLane;
+    let halfW = (laneSlider.value() * LANE_SPACING) / 2;
+    this.targetOffset = -halfW + (newLane + 0.5) * LANE_SPACING;
+    this._lastLC = millis() / 1000;
   }
+
+  canChangeLane() {
+    return millis() / 1000 - this._lastLC > LANE_CHANGE_COOLDOWN;
+  }
+
+  update(dt, allCars) {
+    // forward motion, clamped to avoid overlap
+    let factor = speedSlider.value() / 10;
+    let rawDist = this.speed * dt * factor;
+
+    // find leader gap in this.lane
+    let laneCars = allCars
+      .filter((c) => c.lane === this.lane)
+      .sort((a, b) => a.angle - b.angle);
+    if (laneCars.length > 1) {
+      let idx = laneCars.indexOf(this);
+      let leader = laneCars[(idx + 1) % laneCars.length];
+      let gap = (leader.angle - this.angle + TWO_PI) % TWO_PI;
+      let maxDist = max(gap - MIN_GAP, 0);
+      rawDist = min(rawDist, maxDist);
+    }
+
+    this.angle = (this.angle + rawDist) % TWO_PI;
+
+    // smooth lane slide
+    this.laneOffset = lerp(this.laneOffset, this.targetOffset, 0.1);
+    // once nearly there, commit
+    if (abs(this.laneOffset - this.targetOffset) < 1) {
+      this.lane = this.targetLane;
+    }
+  }
+
   show(cx, cy, cRX, cRY) {
-    const halfW = (laneSlider.value() * LANE_SPACING) / 2;
-    const offs = -halfW + this.lane * LANE_SPACING + LANE_SPACING / 2;
-    let rX = cRX + offs,
-      rY = cRY + offs;
-    let x = cx + rX * cos(this.angle);
-    let y = cy + rY * sin(this.angle);
+    // compute position with lateral offset
+    let x = cx + (cRX + this.laneOffset) * cos(this.angle);
+    let y = cy + (cRY + this.laneOffset) * sin(this.angle);
 
     push();
     translate(x, y);
@@ -201,11 +262,5 @@ class Car {
     fill(this.col);
     ellipse(0, 0, LANE_SPACING * 0.8, LANE_SPACING * 0.4);
     pop();
-  }
-  canChangeLane() {
-    return millis() / 1000 - this._lastLC > LANE_CHANGE_COOLDOWN;
-  }
-  markLaneChange() {
-    this._lastLC = millis() / 1000;
   }
 }
