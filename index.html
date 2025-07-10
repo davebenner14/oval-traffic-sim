@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Oval Traffic Sim</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #222;
+        color: #fff;
+        font-family: Arial, sans-serif;
+      }
+      #controls {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        border-radius: 5px;
+        z-index: 10;
+      }
+      #controls p {
+        margin: 5px 0 0;
+        font-size: 14px;
+      }
+      #controls input,
+      #controls button {
+        margin: 5px 0;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="controls"></div>
+
+    <!-- p5.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+    <!-- your simulation -->
+    <script src="sketch.js"></script>
+  </body>
+</html>
